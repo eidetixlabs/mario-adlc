@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Mario Dash</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="hud">
+      <div class="hud-item">
+        <span class="label">SCORE</span>
+        <span id="score">0</span>
+      </div>
+      <div class="hud-item brand">
+        <span>MARIO DASH</span>
+        <span id="mode-badge" class="mode-badge">CLASSIC</span>
+      </div>
+      <div class="hud-item">
+        <span class="label">LIVES</span>
+        <span id="lives">3</span>
+      </div>
+      <div class="hud-item">
+        <span class="label">COINS</span>
+        <span id="coins">0</span>
+      </div>
+      <button id="mute-btn" class="mute-btn" type="button" title="Mute (M)" aria-label="Toggle mute">🔊</button>
+    </header>
+
+    <div class="stage-wrap">
+      <canvas id="game" width="1280" height="720"></canvas>
+      <div id="agent-chip" class="agent-chip hidden">AGENT: AUTOPILOT</div>
+
+      <div id="overlay" class="overlay">
+        <div class="panel panel-wide">
+          <h1 id="overlay-title">MARIO DASH</h1>
+          <p id="overlay-msg">Pick a mode, then race for the flag.</p>
+
+          <div id="mode-picker" class="mode-picker">
+            <button type="button" class="mode-card selected" data-mode="classic">
+              <span class="mode-icon">🕹️</span>
+              <span class="mode-name">Classic</span>
+              <span class="mode-desc">Crawling code bugs plus hidden landmines, edge cases and burrowers.</span>
+            </button>
+            <button type="button" class="mode-card" data-mode="context">
+              <span class="mode-icon">🕸️</span>
+              <span class="mode-name">Context Graph</span>
+              <span class="mode-desc">Threat graph surfaces bugs, edge cases, distance and urgency. You steer.</span>
+            </button>
+            <button type="button" class="mode-card" data-mode="agent">
+              <span class="mode-icon">🤖</span>
+              <span class="mode-name">Autonomous Agent</span>
+              <span class="mode-desc">Full map + autopilot. Override anytime.</span>
+            </button>
+          </div>
+
+          <ul id="controls-list" class="controls">
+            <li><kbd>←</kbd><kbd>→</kbd> or <kbd>A</kbd><kbd>D</kbd> Move</li>
+            <li><kbd>↑</kbd> / <kbd>W</kbd> / <kbd>SPACE</kbd> Jump</li>
+            <li><kbd>SHIFT</kbd> Run</li>
+            <li><kbd>P</kbd> Pause · <kbd>M</kbd> Mute</li>
+          </ul>
+          <button id="start-btn" type="button">START GAME</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="game.js"></script>
+</body>
+</html>
