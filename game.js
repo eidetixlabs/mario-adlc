@@ -46,6 +46,19 @@
     },
   };
 
+  const BUG_NAMES = [
+    "ARIANE 5",
+    "THERAC-25",
+    "MARS UNITS",
+    "PENTIUM FDIV",
+    "Y2K",
+    "HEARTBLEED",
+    "PATRIOT CLOCK",
+    "KNIGHT CAP",
+  ];
+  const LANDMINE_NAMES = ["SCOPE CREEP", "TECH DEBT", "FLAKY TEST", "MERGE CONFLICT"];
+  const PROD_ISSUE_NAMES = ["MEMORY LEAK", "DB DEADLOCK", "CACHE STAMPEDE", "CERT EXPIRY"];
+
   let gameMode = "classic";
 
   // Viewport fills the window; TILE scales so ~14 columns are on screen (big Mario-like props)
@@ -82,14 +95,14 @@
   // ---------- Level authoring ----------
   // We only hand-author the SURFACE terrain + an "air" layer. Ground body rows are
   // generated so pits/pipes always stay perfectly aligned.
-  // Surface legend: # ground  . pit  P tall pipe (piranha)  p short pipe  S spike  H rotating hidden trap
-  // Air legend:     C coin  ? mushroom block  ! star block  B hidden mushroom brick  = platform  E goomba  F flag
+  // Surface legend: # ground  . pit  P tall pipe  p short pipe  S spike  H landmine  X single edge case
+  // Air legend:     C coin  ? mushroom block  ! star block  B hidden mushroom brick  = platform  E code bug  F flag
   const SURFACE_ROW = 11;
   const SURFACE = [
-    "########H#", "...", "######", "PP", "########",
-    "##HH##", "####", "...", "###", "##SS##",
+    "#######X##", "...", "######", "PP", "########",
+    "#H####", "####", "...", "###", "##S###",
     "######", "PP", "########", "....", "####",
-    "##HH##", "######", "pp", "########", "##SS##",
+    "#H####", "######", "pp", "########", "##S###",
     "##########", "...", "##########",
   ].join("");
 
@@ -135,7 +148,7 @@
     putStr(8, 51, "===");        // decorative step
     putStr(7, 81, "==");
 
-    // Goombas patrolling the flats
+    // Named code bugs patrol the flats.
     put(10, 5, "E");             // early code bug introduces the SDLC theme
     put(10, 26, "E");
     put(10, 52, "E");
@@ -277,6 +290,16 @@
       tone(1319, 0.18, "square", 0.22, null, 0.08);
     }
 
+    function powerup() {
+      [523, 659, 784, 1047].forEach((n, i) => tone(n, 0.13, "square", 0.24, null, i * 0.07));
+    }
+
+    function explosion() {
+      tone(120, 0.38, "sawtooth", 0.3, 38);
+      noiseBurst(0.42, 0.4);
+      tone(70, 0.28, "square", 0.22, 28, 0.05);
+    }
+
     function stomp() {
       tone(180, 0.08, "triangle", 0.28, 80);
       noiseBurst(0.06, 0.12);
@@ -343,7 +366,22 @@
     // Init mute button UI
     applyMute();
 
-    return { unlock, toggleMute, setMuted, jump, coin, stomp, hurt, die, win, startMusic, stopMusic, isMuted: () => muted };
+    return {
+      unlock,
+      toggleMute,
+      setMuted,
+      jump,
+      coin,
+      powerup,
+      explosion,
+      stomp,
+      hurt,
+      die,
+      win,
+      startMusic,
+      stopMusic,
+      isMuted: () => muted,
+    };
   })();
 
   function rect(x, y, w, h) {
@@ -398,13 +436,12 @@
     });
   }
 
-  function addHiddenTrap(x, y, index) {
+  function addHiddenTrap(x, y, type, index = 0) {
     // The ground remains completely ordinary until the trap enters its trigger radius.
     solids.push(rect(x, y, TILE, TILE));
-    const types = ["edgecase", "landmine", "burrower"];
-    const type = types[index % types.length];
     hiddenTraps.push({
       type,
+      name: type === "landmine" ? LANDMINE_NAMES[index % LANDMINE_NAMES.length] : "EDGE CASE",
       x: x + TILE * 0.12,
       y,
       groundY: y,
@@ -415,6 +452,7 @@
       progress: 0,
       timer: 0,
       vx: 0,
+      blastTime: 0,
       dead: false,
     });
   }
@@ -440,8 +478,9 @@
     const cols = LEVEL_ROWS[0].length;
     const pipeClaimed = Array.from({ length: rows }, () => Array(cols).fill(false));
     const groundRow = rows - 2;
-    let hiddenTrapIndex = 0;
+    let landmineIndex = 0;
     let enemyIndex = 0;
+    let piranhaIndex = 0;
 
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
@@ -453,12 +492,20 @@
           solids.push(rect(x, y, TILE, TILE));
         } else if (ch === "=") {
           const ph = Math.max(14, Math.round(TILE * 0.35));
-          platforms.push(rect(x, y + TILE - ph, TILE, ph));
+          platforms.push({
+            ...rect(x, y + TILE - ph, TILE, ph),
+            occupied: false,
+            fallTimer: 0,
+            fallDelay: 0.72,
+            falling: false,
+            vy: 0,
+          });
         } else if (ch === "S") {
           addSpike(x, y);
-        } else if (ch === "H") {
-          addHiddenTrap(x, y, hiddenTrapIndex);
-          hiddenTrapIndex += 1;
+        } else if (ch === "H" || ch === "X") {
+          const type = ch === "X" ? "edgecase" : "landmine";
+          addHiddenTrap(x, y, type, landmineIndex);
+          if (type === "landmine") landmineIndex += 1;
         } else if ((ch === "P" || ch === "p") && !pipeClaimed[r][c]) {
           // Pipes are authored only on the surface row; they rise upward from the ground.
           let pw = 0;
@@ -473,6 +520,9 @@
           if (pipe.piranha) {
             const pw2 = pipe.w;
             piranhas.push({
+              index: piranhaIndex,
+              name: PROD_ISSUE_NAMES[piranhaIndex % PROD_ISSUE_NAMES.length],
+              bugName: BUG_NAMES[(piranhaIndex + 6) % BUG_NAMES.length],
               pipe,
               cx: pipe.x + pw2 / 2,
               topY: pipe.y,
@@ -480,7 +530,11 @@
               h: TILE * 1.25,
               t: Math.random() * Math.PI * 2,
               out: 0, // 0 hidden .. 1 fully emerged
+              bugOnlyOutlet: false,
+              bugSpawned: false,
+              bugTimer: 0.8 + Math.random() * 1.4,
             });
+            piranhaIndex += 1;
           }
         } else if (ch === "?" || ch === "!" || ch === "B") {
           const b = rect(x + TILE * 0.06, y + TILE * 0.06, TILE * 0.88, TILE * 0.88);
@@ -504,7 +558,8 @@
           const ew = TILE * 0.7;
           const eh = TILE * 0.7;
           enemies.push({
-            type: enemyIndex % 3 === 0 ? "bug" : "goomba",
+            type: "bug",
+            name: BUG_NAMES[enemyIndex % BUG_NAMES.length],
             x: x + (TILE - ew) / 2,
             y: y + TILE - eh,
             w: ew,
@@ -522,6 +577,11 @@
     }
 
     groundY = cellY(groundRow, rows);
+
+    // Exactly one tall pipe is a bug-only outlet; it never also grows a piranha.
+    if (piranhas.length) {
+      piranhas[Math.floor(Math.random() * piranhas.length)].bugOnlyOutlet = true;
+    }
 
     // Detect pits on the walkable ground row for agent jumps / path drawing
     const g = LEVEL_ROWS[groundRow];
@@ -562,7 +622,11 @@
       }
     }
     for (const t of hiddenTraps) {
-      raw.push({ start: t.x, end: t.x + t.w, kind: "trap" });
+      if (t.type === "landmine") {
+        raw.push({ start: t.cx - TILE * 1.55, end: t.cx + TILE * 1.55, kind: "trap" });
+      } else {
+        raw.push({ start: t.x - TILE * 0.35, end: t.x + t.w + TILE * 0.35, kind: "trap" });
+      }
     }
     raw.sort((a, b) => a.start - b.start);
 
@@ -611,8 +675,20 @@
       jumpBuf: 0,
       walkFrame: 0,
       prevVy: 0,
+      safeX: spawn.x,
       super: false, // mushroom shield: survive one hit
     };
+  }
+
+  function setPlayerSuper(enabled) {
+    if (!player || player.super === enabled) return;
+    const centerX = player.x + player.w / 2;
+    const feetY = player.y + player.h;
+    player.super = enabled;
+    player.w = TILE * (enabled ? 0.6 : 0.55);
+    player.h = TILE * (enabled ? 0.95 : 0.85);
+    player.x = centerX - player.w / 2;
+    player.y = feetY - player.h;
   }
 
   function resetRun(full = false) {
@@ -738,7 +814,7 @@
       if (edge) {
         const dist = edge.x - cx;
         // Pits need earlier takeoff; spikes jump closer to the tips
-        const window = edge.kind === "pit" ? TILE * 1.55 : TILE * 1.4;
+        const window = edge.kind === "pit" ? TILE * 2.2 : TILE * 2;
         if (dist <= window) {
           jump = true;
           agentHoldJump = true;
@@ -757,7 +833,7 @@
       for (const e of enemies) {
         if (e.dead) continue;
         const dx = e.x - player.x;
-        if (dx > TILE * 0.15 && dx < TILE * 2.3) {
+        if (dx > -TILE * 0.1 && dx < TILE * 3) {
           jump = true;
           agentHoldJump = true;
           break;
@@ -766,7 +842,7 @@
 
       for (const p of pipes) {
         const dx = p.x - (player.x + player.w);
-        if (dx > 0 && dx < TILE * 1.05 && player.y + player.h > p.y + TILE * 0.25) {
+        if (dx > -TILE * 0.18 && dx < TILE * 2.25 && player.y + player.h > p.y + TILE * 0.2) {
           jump = true;
           agentHoldJump = true;
           break;
@@ -853,19 +929,19 @@
     updateAgentChip(MODES[gameMode].agent);
   }
 
-  function burst(x, y, color, n = 10) {
+  function burst(x, y, color, n = 10, power = 1) {
     for (let i = 0; i < n; i++) {
       const a = Math.random() * Math.PI * 2;
-      const s = 80 + Math.random() * 180;
+      const s = (80 + Math.random() * 180) * power;
       particles.push({
         x,
         y,
         vx: Math.cos(a) * s,
         vy: Math.sin(a) * s - 80,
-        life: 0.4 + Math.random() * 0.4,
-        max: 0.8,
+        life: (0.4 + Math.random() * 0.4) * Math.sqrt(power),
+        max: 0.8 * Math.sqrt(power),
         color,
-        size: 3 + Math.random() * 4,
+        size: (3 + Math.random() * 4) * Math.sqrt(power),
       });
     }
   }
@@ -902,6 +978,7 @@
     if (entity.vy < 0) return;
     const feet = entity.y + entity.h;
     for (const p of platforms) {
+      if (p.y > H + TILE) continue;
       const wasAbove = feet - entity.vy * dt <= p.y + 3;
       if (!wasAbove) continue;
       if (
@@ -913,15 +990,61 @@
         entity.y = p.y - entity.h;
         entity.vy = 0;
         entity.onGround = true;
+        p.occupied = true;
       }
     }
   }
 
+  function updateBridgePlatforms(dt) {
+    for (const p of platforms) {
+      if (p.falling) {
+        p.vy += GRAVITY * 0.72 * dt;
+        p.y += p.vy * dt;
+        continue;
+      }
+      if (p.occupied) p.fallTimer += dt;
+      else p.fallTimer = Math.max(0, p.fallTimer - dt * 1.8);
+      if (p.fallTimer >= p.fallDelay) {
+        p.falling = true;
+        p.vy = TILE * 0.7;
+        shake = Math.max(shake, 5);
+        AudioSys.stomp();
+        burst(p.x + p.w / 2, p.y + p.h / 2, "#f8d030", 9);
+      }
+    }
+  }
+
+  function autopilotActive() {
+    return gameMode === "agent" && agentOverride <= 0;
+  }
+
+  function recoverAutopilotFall() {
+    player.x = Math.max(spawn.x, player.safeX - TILE * 0.45);
+    player.y = groundY - player.h;
+    player.vx = 0;
+    player.vy = 0;
+    player.onGround = false;
+    invuln = 0.9;
+    agentHoldJump = false;
+    for (const edge of jumpEdges) edge.done = false;
+    cameraX = Math.max(0, player.x - W * 0.35);
+    floatText(player.x, player.y - TILE * 0.25, "AUTO RECOVER", "#ffe45c");
+  }
+
   function hurtPlayer() {
     if (invuln > 0 || starTime > 0) return;
+    if (autopilotActive()) {
+      invuln = 0.85;
+      shake = Math.max(shake, 5);
+      player.vy = JUMP_VELOCITY * 0.52;
+      AudioSys.hurt();
+      burst(player.x + player.w / 2, player.y + player.h / 2, "#ffe45c", 10);
+      floatText(player.x, player.y - TILE * 0.25, "AUTO PATCH", "#ffe45c");
+      return;
+    }
     // Mushroom shield: soak one hit, shrink back to small Mario instead of dying.
     if (player.super) {
-      player.super = false;
+      setPlayerSuper(false);
       invuln = 1.4;
       shake = 8;
       AudioSys.hurt();
@@ -950,6 +1073,9 @@
       player.y = spawn.y;
       player.vx = 0;
       player.vy = 0;
+      player.onGround = false;
+      agentHoldJump = false;
+      for (const edge of jumpEdges) edge.done = false;
       cameraX = Math.max(0, player.x - W * 0.35);
     }
   }
@@ -1010,10 +1136,10 @@
       floatText(player.x, player.y - TILE * 0.4, "INVINCIBLE!", "#f8d030");
       AudioSys.win();
     } else {
-      if (!player.super) player.super = true;
+      setPlayerSuper(true);
       score += 500;
-      floatText(player.x, player.y - TILE * 0.4, "+500", "#ff3b3b");
-      AudioSys.coin();
+      floatText(player.x, player.y - TILE * 0.4, "SUPER SIZE!", "#ff3b3b");
+      AudioSys.powerup();
     }
     burst(pu.x + pu.w / 2, pu.y + pu.h / 2, pu.type === "star" ? "#f8d030" : "#ff3b3b", 18);
     updateHud();
@@ -1066,7 +1192,7 @@
 
   function hiddenTrapHitbox(t) {
     if (t.type === "landmine") {
-      return { x: t.cx - TILE * 0.95, y: t.groundY - TILE * 0.8, w: TILE * 1.9, h: TILE * 1.05 };
+      return { x: t.cx - TILE * 1.4, y: t.groundY - TILE * 1.35, w: TILE * 2.8, h: TILE * 1.6 };
     }
     const visibleH = t.h * t.progress;
     return { x: t.x, y: t.groundY - visibleH, w: t.w, h: visibleH };
@@ -1076,14 +1202,18 @@
     if (t.state !== "hidden") return;
     t.state = "triggered";
     t.timer = t.type === "landmine" ? 0.48 : 0;
-    t.vx = t.type === "burrower" ? (player.x < t.x ? -TILE * 2.3 : TILE * 2.3) : 0;
+    t.vx = 0;
     floatText(t.cx - TILE * 0.18, t.groundY - TILE * 0.35, "!", "#ffef5a");
   }
 
   function updateHiddenTraps(dt) {
     const playerCx = player.x + player.w / 2;
     for (const t of hiddenTraps) {
-      if (t.dead || t.state === "spent") continue;
+      if (t.dead) continue;
+      if (t.state === "spent") {
+        t.blastTime = Math.max(0, t.blastTime - dt);
+        continue;
+      }
       const triggerRange = t.type === "landmine" ? TILE * 0.9 : TILE * 1.45;
       if (t.state === "hidden" && Math.abs(playerCx - t.cx) < triggerRange) triggerHiddenTrap(t);
       if (t.state === "hidden") continue;
@@ -1093,9 +1223,13 @@
         t.timer -= dt;
         if (t.timer <= 0) {
           t.state = "spent";
-          shake = Math.max(shake, 14);
-          burst(t.cx, t.groundY - TILE * 0.2, "#ff9d2e", 28);
-          burst(t.cx, t.groundY - TILE * 0.2, "#2b221c", 16);
+          t.blastTime = 0.72;
+          shake = Math.max(shake, 24);
+          AudioSys.explosion();
+          burst(t.cx, t.groundY - TILE * 0.35, "#ffcf4a", 42, 2);
+          burst(t.cx, t.groundY - TILE * 0.25, "#ff5a24", 34, 1.75);
+          burst(t.cx, t.groundY - TILE * 0.15, "#2b221c", 24, 1.45);
+          floatText(t.cx - TILE * 0.5, t.groundY - TILE * 1.1, t.name, "#ffcf4a");
           if (starTime <= 0 && aabb(player, hiddenTrapHitbox(t))) hurtPlayer();
         }
         continue;
@@ -1103,26 +1237,6 @@
 
       t.progress = Math.min(1, t.progress + dt * 7);
       if (t.progress < 0.28) continue;
-
-      if (t.type === "burrower" && t.progress >= 1) {
-        t.state = "active";
-        const beforeX = t.x;
-        t.x += t.vx * dt;
-        let turn = false;
-        for (const s of solids) {
-          const body = hiddenTrapHitbox(t);
-          if (aabb(body, s) && s.y < t.groundY - TILE * 0.2) {
-            t.x = beforeX;
-            turn = true;
-            break;
-          }
-        }
-        const probeX = t.vx > 0 ? t.x + t.w + 3 : t.x - 3;
-        const footProbe = rect(probeX, t.groundY + 2, 4, TILE * 0.25);
-        if (!solids.some((s) => aabb(footProbe, s))) turn = true;
-        if (turn) t.vx *= -1;
-        t.cx = t.x + t.w / 2;
-      }
 
       const hitbox = hiddenTrapHitbox(t);
       if (!aabb(player, hitbox)) continue;
@@ -1132,21 +1246,33 @@
         AudioSys.stomp();
         burst(t.cx, t.groundY - t.h * 0.5, "#f8d030", 18);
         updateHud();
-      } else if (
-        t.type === "burrower" &&
-        player.vy > 0 &&
-        player.y + player.h - hitbox.y < TILE * 0.42
-      ) {
-        t.dead = true;
-        player.vy = JUMP_VELOCITY * 0.48;
-        score += 250;
-        AudioSys.stomp();
-        burst(t.cx, t.groundY - t.h * 0.4, "#8d4d24", 16);
-        updateHud();
       } else {
         hurtPlayer();
       }
     }
+  }
+
+  function releasePipeBug(p) {
+    const ew = TILE * 0.7;
+    const eh = TILE * 0.7;
+    enemies.push({
+      type: "bug",
+      name: p.bugName,
+      x: p.cx - ew / 2,
+      y: p.topY,
+      w: ew,
+      h: eh,
+      vx: (Math.random() < 0.5 ? -1 : 1) * TILE * 1.15,
+      vy: 0,
+      dead: false,
+      squish: 0,
+      pipeEmerging: true,
+      pipeY: p.topY,
+      emergeProgress: 0,
+      ignoreLedge: 1.4,
+    });
+    p.bugSpawned = true;
+    floatText(p.cx - TILE * 0.42, p.topY - TILE * 0.4, p.bugName, "#7bdc62");
   }
 
   function updatePiranhas(dt) {
@@ -1154,6 +1280,15 @@
       p.t += dt * 1.6;
       const px = player ? player.x + player.w / 2 : -1e9;
       const nearPipe = Math.abs(px - p.cx) < TILE * 1.6;
+      const approachingPipe = px > p.cx - TILE * 8 && px < p.cx + TILE * 2;
+      if (p.bugOnlyOutlet) {
+        p.out = 0;
+        if (!p.bugSpawned && approachingPipe && !nearPipe) {
+          p.bugTimer -= dt;
+          if (p.bugTimer <= 0) releasePipeBug(p);
+        }
+        continue;
+      }
       // Classic behavior: won't rise while Mario stands right by the pipe.
       const wantOut = !nearPipe && Math.sin(p.t) > 0;
       const target = wantOut ? (0.5 + Math.sin(p.t) * 0.5) : 0;
@@ -1221,9 +1356,14 @@
       burst(player.x + player.w / 2, player.y + player.h, "#ffffff88", 6);
     }
 
+    for (const p of platforms) p.occupied = false;
     player.prevVy = player.vy;
     moveAndCollide(player, dt);
     oneWayPlatforms(player, dt);
+    updateBridgePlatforms(dt);
+    if (player.onGround && Math.abs(player.y + player.h - groundY) < TILE * 0.2) {
+      player.safeX = Math.max(player.safeX, player.x);
+    }
     checkBlockBumps();
     updatePiranhas(dt);
     updateHiddenTraps(dt);
@@ -1238,7 +1378,10 @@
       player.x = levelW - player.w;
       player.vx = 0;
     }
-    if (player.y > H + 120) hurtPlayer();
+    if (player.y > H + 120) {
+      if (autopilotActive()) recoverAutopilotFall();
+      else hurtPlayer();
+    }
 
     for (const s of spikes) {
       if (starTime > 0) continue;
@@ -1268,6 +1411,16 @@
         e.squish += dt;
         continue;
       }
+      if (e.pipeEmerging) {
+        e.emergeProgress = Math.min(1, e.emergeProgress + dt * 1.8);
+        const eased = 1 - Math.pow(1 - e.emergeProgress, 3);
+        e.y = e.pipeY - e.h * eased;
+        if (e.emergeProgress < 1) continue;
+        e.pipeEmerging = false;
+        e.y = e.pipeY - e.h;
+        e.vy = JUMP_VELOCITY * 0.48;
+      }
+      if (e.ignoreLedge > 0) e.ignoreLedge = Math.max(0, e.ignoreLedge - dt);
       e.vy += GRAVITY * dt;
       const beforeX = e.x;
       e.x += e.vx * dt;
@@ -1287,7 +1440,7 @@
           break;
         }
       }
-      if (hitWall || !groundAhead) e.vx *= -1;
+      if (hitWall || (!groundAhead && !e.ignoreLedge)) e.vx *= -1;
 
       e.y += e.vy * dt;
       for (const s of solids) {
@@ -1306,8 +1459,8 @@
         e.squish = 0;
         score += 200;
         AudioSys.stomp();
-        burst(e.x + e.w / 2, e.y + e.h / 2, e.type === "bug" ? "#7dff45" : "#f8d030", 18);
-        floatText(e.x, e.y, e.type === "bug" ? "BUG FIXED!" : "+200", e.type === "bug" ? "#7dff45" : "#f8d030");
+        burst(e.x + e.w / 2, e.y + e.h / 2, "#7dff45", 18);
+        floatText(e.x, e.y, `${e.name} FIXED!`, "#7dff45");
         updateHud();
         continue;
       }
@@ -1319,8 +1472,8 @@
         player.vy = JUMP_VELOCITY * 0.5;
         score += 200;
         AudioSys.stomp();
-        burst(e.x + e.w / 2, e.y + e.h / 2, e.type === "bug" ? "#7dff45" : "#c84c0c", 16);
-        floatText(e.x, e.y, e.type === "bug" ? "BUG FIXED!" : "+200", "#fff");
+        burst(e.x + e.w / 2, e.y + e.h / 2, "#7dff45", 16);
+        floatText(e.x, e.y, `${e.name} FIXED!`, "#fff");
         updateHud();
       } else {
         hurtPlayer();
@@ -1414,30 +1567,6 @@
     B: "#1e6cff",
     Y: "#f8d030",
     N: "#5a2d0c",
-  };
-
-  const GOOMBA = [
-    "......KKKK......",
-    "....KKKKKKKK....",
-    "...KKKKKKKKKK...",
-    "..KKEEKKKKEEKK..",
-    "..KEWWKEEKWWKE..",
-    ".KKEWWKEEKWWKEK.",
-    ".KKEEEKEEKEEEKK.",
-    ".KKKKKKKKKKKKKK.",
-    ".KKSSSSSSSSKKK..",
-    "..KSSSSSSSSKK...",
-    "..KKKKKKKKKK....",
-    "...KK....KK.....",
-    "..KKKK..KKKK....",
-    ".KKKKK..KKKKK...",
-  ];
-
-  const GOOMBA_PAL = {
-    K: "#8b4513",
-    E: "#111111",
-    W: "#ffffff",
-    S: "#c4a060",
   };
 
   function drawCloud(x, y, s) {
@@ -1582,7 +1711,12 @@
   }
 
   function drawPlatform(p) {
-    const [x, y] = worldToScreen(p.x, p.y);
+    let [x, y] = worldToScreen(p.x, p.y);
+    const stress = Math.min(1, p.fallTimer / p.fallDelay);
+    if (!p.falling && stress > 0.55) {
+      x += Math.sin(animTime * 42 + p.x) * TILE * 0.025 * stress;
+      y += Math.cos(animTime * 37 + p.x) * TILE * 0.012 * stress;
+    }
     // Question-block style brick platform
     ctx.fillStyle = "#e8a830";
     ctx.fillRect(x, y, p.w, p.h);
@@ -1597,6 +1731,16 @@
     ctx.fillStyle = "#fff8";
     ctx.fillRect(x + 4, y + 5, 3, 3);
     ctx.fillRect(x + p.w - 7, y + 5, 3, 3);
+    if (stress > 0.35) {
+      ctx.strokeStyle = stress > 0.75 ? "#fff0a0" : "#7a4700";
+      ctx.lineWidth = Math.max(2, TILE * 0.025);
+      ctx.beginPath();
+      ctx.moveTo(x + p.w * 0.48, y + 2);
+      ctx.lineTo(x + p.w * 0.4, y + p.h * 0.45);
+      ctx.lineTo(x + p.w * 0.57, y + p.h * 0.72);
+      ctx.lineTo(x + p.w * 0.5, y + p.h - 2);
+      ctx.stroke();
+    }
   }
 
   function drawPipe(p) {
@@ -1654,6 +1798,119 @@
     }
   }
 
+  function drawEntityName(x, y, name, accent = "#fff") {
+    if (!name || gameMode !== "classic") return;
+    ctx.save();
+    const fontSize = Math.max(6, Math.round(TILE * 0.075));
+    ctx.font = `${fontSize}px 'Press Start 2P', monospace`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const width = ctx.measureText(name).width + TILE * 0.2;
+    const height = fontSize + TILE * 0.12;
+    ctx.fillStyle = "#071019e6";
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = Math.max(1.5, TILE * 0.02);
+    roundRect(x - width / 2, y - height / 2, width, height, 4);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#fff";
+    ctx.fillText(name, x, y + 1);
+    ctx.restore();
+  }
+
+  function drawTechDebtTrap(cx, y, pulse, agentReveal) {
+    const labels = ["TODO", "FIXME", "DEBT"];
+    const colors = ["#6f402b", "#875038", "#a86542"];
+    for (let i = 0; i < labels.length; i++) {
+      const width = TILE * (0.72 - i * 0.08);
+      const cardY = y - TILE * (0.03 + i * 0.15);
+      ctx.save();
+      ctx.translate(cx + (i % 2 ? TILE * 0.055 : -TILE * 0.035), cardY);
+      ctx.rotate((i % 2 ? 1 : -1) * 0.045);
+      ctx.fillStyle = colors[i];
+      ctx.strokeStyle = agentReveal ? "#ffd84d" : "#24130d";
+      ctx.lineWidth = Math.max(2, TILE * 0.03);
+      roundRect(-width / 2, -TILE * 0.11, width, TILE * 0.2, TILE * 0.035);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#fff1d0";
+      ctx.font = `${Math.max(6, Math.round(TILE * 0.065))}px 'Press Start 2P', monospace`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(labels[i], 0, 0);
+      ctx.restore();
+    }
+
+    // A live fuse makes the accumulated debt read as the mine it really is.
+    ctx.strokeStyle = "#21130d";
+    ctx.lineWidth = Math.max(2, TILE * 0.035);
+    ctx.beginPath();
+    ctx.moveTo(cx + TILE * 0.24, y - TILE * 0.34);
+    ctx.quadraticCurveTo(cx + TILE * 0.48, y - TILE * 0.5, cx + TILE * 0.43, y - TILE * 0.66);
+    ctx.stroke();
+    ctx.fillStyle = pulse > 0.45 ? "#fff4a3" : "#ff4b2b";
+    ctx.beginPath();
+    ctx.arc(cx + TILE * 0.43, y - TILE * 0.68, TILE * (0.055 + pulse * 0.025), 0, Math.PI * 2);
+    ctx.fill();
+    drawEntityName(cx, y - TILE * 0.88, "TECH DEBT", "#ffb347");
+  }
+
+  function drawEdgeCaseTrap(t, cx, gy, agentReveal) {
+    const h = t.h * (agentReveal ? 1 : t.progress);
+    const top = gy - h;
+    const cardY = top + h * 0.5;
+    const jitter = Math.sin(animTime * 17) * TILE * 0.025;
+    const magenta = "#ff3f8e";
+    const cyan = "#42e8ff";
+
+    // Boundary rails squeeze an impossible input card from both sides.
+    ctx.lineWidth = Math.max(3, TILE * 0.055);
+    ctx.lineCap = "square";
+    for (const [side, color] of [[-1, cyan], [1, magenta]]) {
+      const x = cx + side * t.w * 0.5 - side * jitter;
+      ctx.strokeStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(x - side * t.w * 0.2, top);
+      ctx.lineTo(x, top);
+      ctx.lineTo(x, gy - TILE * 0.04);
+      ctx.lineTo(x - side * t.w * 0.2, gy - TILE * 0.04);
+      ctx.stroke();
+    }
+
+    ctx.save();
+    ctx.translate(cx, cardY);
+    ctx.rotate(Math.sin(animTime * 9) * 0.055);
+    const cardW = t.w * 0.72;
+    const cardH = h * 0.54;
+    ctx.fillStyle = `${cyan}88`;
+    ctx.fillRect(-cardW / 2 - 3, -cardH / 2 + 3, cardW, cardH);
+    ctx.fillStyle = `${magenta}88`;
+    ctx.fillRect(-cardW / 2 + 3, -cardH / 2 - 3, cardW, cardH);
+    ctx.fillStyle = "#111528";
+    ctx.strokeStyle = "#f6f7ff";
+    ctx.lineWidth = Math.max(2, TILE * 0.025);
+    roundRect(-cardW / 2, -cardH / 2, cardW, cardH, TILE * 0.055);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#fff";
+    ctx.font = `${Math.max(6, Math.round(TILE * 0.07))}px 'Press Start 2P', monospace`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("IF (?)", 0, -cardH * 0.16);
+    ctx.fillStyle = "#ffe66d";
+    ctx.font = `${Math.max(5, Math.round(TILE * 0.052))}px 'Press Start 2P', monospace`;
+    ctx.fillText("-1 / 0 / MAX", 0, cardH * 0.2);
+    ctx.restore();
+
+    ctx.fillStyle = Math.floor(animTime * 18) % 2 ? magenta : cyan;
+    for (let i = 0; i < 6; i++) {
+      const gx = cx + Math.sin(animTime * 8 + i * 1.7) * t.w * 0.6;
+      const glitchY = top + ((i * 0.19 + animTime * 0.4) % 1) * h;
+      ctx.fillRect(gx, glitchY, TILE * 0.09, TILE * 0.04);
+    }
+    drawEntityName(cx, top - TILE * 0.24, "EDGE CASE", cyan);
+  }
+
   function drawHiddenTrap(t) {
     if (t.dead) return;
     const agentReveal = gameMode === "agent" && t.state === "hidden";
@@ -1674,6 +1931,20 @@
         ctx.beginPath();
         ctx.ellipse(cx, gy - TILE * 0.03, TILE * 0.31, TILE * 0.09, 0, 0, Math.PI * 2);
         ctx.fill();
+        if (t.blastTime > 0) {
+          const phase = 1 - t.blastTime / 0.72;
+          const radius = TILE * (0.35 + phase * 1.85);
+          ctx.globalAlpha = Math.max(0, 1 - phase);
+          ctx.fillStyle = phase < 0.3 ? "#fff7b2" : "#ff8b25";
+          ctx.beginPath();
+          ctx.arc(cx, gy - TILE * 0.38, radius * (0.75 - phase * 0.22), 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = "#ffcf4a";
+          ctx.lineWidth = Math.max(4, TILE * 0.09 * (1 - phase));
+          ctx.beginPath();
+          ctx.arc(cx, gy - TILE * 0.3, radius, 0, Math.PI * 2);
+          ctx.stroke();
+        }
         ctx.restore();
         return;
       }
@@ -1686,6 +1957,11 @@
         ctx.beginPath();
         ctx.arc(cx, y, TILE * (0.38 + pulse * 0.16), 0, Math.PI * 2);
         ctx.stroke();
+      }
+      if (t.name === "TECH DEBT") {
+        drawTechDebtTrap(cx, y, pulse, agentReveal);
+        ctx.restore();
+        return;
       }
       // Six pressure prongs make the object unmistakably mine-like.
       ctx.fillStyle = "#171b21";
@@ -1724,64 +2000,9 @@
       ctx.textAlign = "center";
       ctx.fillText("!", cx, y + TILE * 0.075);
       ctx.textAlign = "left";
-    } else if (t.type === "burrower") {
-      const h = t.h * (agentReveal ? 1 : t.progress);
-      const x = cx - t.w / 2;
-      const y = gy - h;
-      const bounce = t.state === "active" ? Math.abs(Math.sin(animTime * 12)) * TILE * 0.06 : 0;
-      ctx.fillStyle = "#5b2c16";
-      ctx.beginPath();
-      ctx.ellipse(cx, y + h * 0.55 - bounce, t.w * 0.48, h * 0.48, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = "#e04a2f";
-      ctx.fillRect(x + t.w * 0.08, y + h * 0.2 - bounce, t.w * 0.84, h * 0.18);
-      ctx.fillStyle = "#fff";
-      ctx.fillRect(x + t.w * 0.22, y + h * 0.4 - bounce, t.w * 0.18, h * 0.22);
-      ctx.fillRect(x + t.w * 0.6, y + h * 0.4 - bounce, t.w * 0.18, h * 0.22);
-      ctx.fillStyle = "#111";
-      ctx.fillRect(x + t.w * 0.3, y + h * 0.46 - bounce, t.w * 0.08, h * 0.13);
-      ctx.fillRect(x + t.w * 0.62, y + h * 0.46 - bounce, t.w * 0.08, h * 0.13);
-      ctx.fillStyle = "#2c1710";
-      ctx.fillRect(x, gy - h * 0.12, t.w * 0.36, h * 0.12);
-      ctx.fillRect(x + t.w * 0.64, gy - h * 0.12, t.w * 0.36, h * 0.12);
+      drawEntityName(cx, y - TILE * 0.36, t.name, "#ffcf4a");
     } else {
-      // An edge case manifests as two impossible boundary brackets snapping shut.
-      const h = t.h * (agentReveal ? 1 : t.progress);
-      const y = gy - h;
-      const snap = t.state === "hidden" ? 0 : Math.abs(Math.sin(animTime * 14)) * TILE * 0.055;
-      const left = cx - t.w * 0.46 + snap;
-      const right = cx + t.w * 0.46 - snap;
-      const color = Math.floor(animTime * 18) % 2 ? "#ff3f75" : "#a855f7";
-      ctx.strokeStyle = color;
-      ctx.lineWidth = Math.max(4, TILE * 0.075);
-      ctx.lineCap = "square";
-      for (const [bx, dir] of [[left, 1], [right, -1]]) {
-        ctx.beginPath();
-        ctx.moveTo(bx + dir * t.w * 0.2, y);
-        ctx.lineTo(bx, y);
-        ctx.lineTo(bx, gy - TILE * 0.05);
-        ctx.lineTo(bx + dir * t.w * 0.2, gy - TILE * 0.05);
-        ctx.stroke();
-      }
-      ctx.fillStyle = "#170b2bdd";
-      ctx.fillRect(cx - t.w * 0.29, y + h * 0.3, t.w * 0.58, h * 0.34);
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 2;
-      ctx.strokeRect(cx - t.w * 0.29, y + h * 0.3, t.w * 0.58, h * 0.34);
-      ctx.fillStyle = "#fff";
-      ctx.font = `${Math.max(6, Math.round(TILE * 0.075))}px 'Press Start 2P', monospace`;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText("EDGE", cx, y + h * 0.47);
-      ctx.textAlign = "left";
-      ctx.textBaseline = "alphabetic";
-      // Deterministic glitch fragments avoid random flicker changing every draw call.
-      ctx.fillStyle = color;
-      for (let i = 0; i < 5; i++) {
-        const gx = cx + Math.sin(animTime * 9 + i * 2.1) * t.w * 0.52;
-        const gY = y + ((i * 0.23 + animTime * 0.35) % 1) * h;
-        ctx.fillRect(gx, gY, TILE * 0.08, TILE * 0.045);
-      }
+      drawEdgeCaseTrap(t, cx, gy, agentReveal);
     }
     ctx.restore();
   }
@@ -1879,6 +2100,7 @@
         ctx.fill();
       }
     }
+    drawEntityName(hx, hy - r * 1.15, p.name, "#ff6961");
   }
 
   function drawBlock(b) {
@@ -1989,17 +2211,15 @@
     }
     for (const t of hiddenTraps) {
       if (t.dead || t.state === "spent") continue;
-      nodes.push({ x: t.cx, y: t.groundY - TILE * 1.3, kind: t.type, hidden: t.state === "hidden" });
+      nodes.push({ x: t.cx, y: t.groundY - TILE * 1.3, kind: t.type, label: t.name, hidden: t.state === "hidden" });
     }
     for (const e of enemies) {
       if (e.dead) continue;
-      nodes.push({ x: e.x + e.w / 2, y: e.y - TILE * 0.55, kind: e.type === "bug" ? "bug" : "enemy" });
-    }
-    for (const p of pits) {
-      nodes.push({ x: p.x + p.w / 2, y: groundY - TILE * 1.3, kind: "pit" });
+      nodes.push({ x: e.x + e.w / 2, y: e.y - TILE * 0.55, kind: "bug", label: e.name });
     }
     for (const p of piranhas) {
-      nodes.push({ x: p.cx, y: p.topY - TILE * 1.7, kind: "piranha" });
+      if (p.bugOnlyOutlet) continue;
+      nodes.push({ x: p.cx, y: p.topY - TILE * 1.7, kind: "piranha", label: p.name });
     }
 
     const playerCx = player.x + player.w / 2;
@@ -2041,46 +2261,42 @@
     for (const n of localNodes) {
       const [x, y] = worldToScreen(n.x, n.y);
       if (x < -50 || x > W + 50) continue;
-      drawHazardSign(x, y, n.kind, n.distance);
+      drawHazardText(x, y, n.kind, n.distance, n.label);
     }
 
-    const nearest = localNodes.find((n) => n.distance >= 0) || localNodes[0];
-    const label = hazardLabel(nearest.kind);
-    const urgency = nearest.distance < 2.2 ? "DANGER" : "AHEAD";
-    const bannerW = Math.min(W * 0.48, TILE * 6.8);
-    const bannerX = W / 2 - bannerW / 2;
-    const bannerY = Math.max(74, TILE * 0.95);
-    ctx.fillStyle = nearest.distance < 2.2 ? "#4a1515e8" : "#071d2ce8";
-    ctx.strokeStyle = nearest.distance < 2.2 ? "#ff5b45" : baseColor;
-    ctx.lineWidth = 3;
-    roundRect(bannerX, bannerY, bannerW, TILE * 0.48, 8);
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = "#fff";
-    ctx.font = `${Math.max(8, Math.round(TILE * 0.12))}px 'Press Start 2P', monospace`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(`${urgency}: ${label} · ${Math.max(0, nearest.distance).toFixed(1)} TILES`, W / 2, bannerY + TILE * 0.24);
-    ctx.textAlign = "left";
-    ctx.textBaseline = "alphabetic";
     ctx.restore();
   }
 
-  function hazardLabel(kind) {
+  function hazardLabel(kind, label = "") {
+    if (label) return label;
     return {
       landmine: "LANDMINE",
       edgecase: "EDGE CASE",
-      burrower: "BURROWER",
       bug: "CODE BUG",
-      enemy: "GOOMBA",
-      piranha: "PIRANHA",
+      piranha: "PROD ISSUE",
       spike: "SPIKES",
-      pit: "PIT",
     }[kind] || "HAZARD";
   }
 
-  // Player-centered graph node: icon, type and actual distance instead of decorative wiring.
-  function drawHazardSign(x, y, kind, distance) {
+  function drawHazardText(x, y, kind, distance, label = "") {
+    const urgent = distance >= 0 && distance < 2.2;
+    const bob = Math.sin(animTime * 4 + x * 0.02) * TILE * 0.035;
+    const text = `${hazardLabel(kind, label)} · ${Math.max(0, distance).toFixed(1)}T`;
+    ctx.save();
+    ctx.font = `${Math.max(7, Math.round(TILE * 0.085))}px 'Press Start 2P', monospace`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineJoin = "round";
+    ctx.lineWidth = Math.max(3, TILE * 0.055);
+    ctx.strokeStyle = "#071019";
+    ctx.strokeText(text, x, y + bob);
+    ctx.fillStyle = urgent ? "#ff6b55" : gameMode === "agent" ? "#ffe45c" : "#8cecff";
+    ctx.fillText(text, x, y + bob);
+    ctx.restore();
+  }
+
+  // Legacy sign renderer retained for the title artwork; gameplay graph uses one-line text.
+  function drawHazardSign(x, y, kind, distance, label = "") {
     const bob = Math.sin(animTime * 4 + x * 0.02) * TILE * 0.06;
     const cy = y + bob;
     const s = TILE * 0.44;
@@ -2109,7 +2325,7 @@
     // Icon
     ctx.save();
     ctx.translate(x, cy);
-    drawHazardIcon(kind, s * 0.9, accent);
+    drawHazardIcon(kind, s * 0.9, accent, label);
     ctx.restore();
 
     ctx.fillStyle = "#071019e8";
@@ -2122,7 +2338,7 @@
     ctx.font = `${Math.max(6, Math.round(TILE * 0.075))}px 'Press Start 2P', monospace`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(`${hazardLabel(kind)} ${Math.max(0, distance).toFixed(1)}`, x, cy + s * 0.97);
+    ctx.fillText(`${hazardLabel(kind, label)} ${Math.max(0, distance).toFixed(1)}`, x, cy + s * 0.97);
     ctx.textAlign = "left";
     ctx.textBaseline = "alphabetic";
   }
@@ -2137,25 +2353,24 @@
     ctx.closePath();
   }
 
-  function drawHazardIcon(kind, s, accent) {
-    if (kind === "pit") {
-      // Downward chevron: "gap / fall here"
-      ctx.strokeStyle = accent;
-      ctx.lineWidth = Math.max(2, s * 0.16);
-      ctx.lineCap = "round";
-      ctx.beginPath();
-      ctx.moveTo(-s * 0.5, -s * 0.3);
-      ctx.lineTo(0, s * 0.35);
-      ctx.lineTo(s * 0.5, -s * 0.3);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(-s * 0.5, -s * 0.7);
-      ctx.lineTo(0, -s * 0.05);
-      ctx.lineTo(s * 0.5, -s * 0.7);
-      ctx.stroke();
-      return;
-    }
+  function drawHazardIcon(kind, s, accent, label = "") {
     if (kind === "landmine") {
+      if (label === "TECH DEBT") {
+        ctx.strokeStyle = "#2a160e";
+        ctx.lineWidth = Math.max(2, s * 0.08);
+        for (let i = 0; i < 3; i++) {
+          const width = s * (1.05 - i * 0.16);
+          ctx.fillStyle = ["#6f402b", "#875038", "#a86542"][i];
+          ctx.fillRect(-width / 2 + (i % 2 ? s * 0.07 : 0), s * 0.34 - i * s * 0.32, width, s * 0.25);
+          ctx.strokeRect(-width / 2 + (i % 2 ? s * 0.07 : 0), s * 0.34 - i * s * 0.32, width, s * 0.25);
+        }
+        ctx.fillStyle = "#fff1d0";
+        ctx.font = `${Math.max(5, Math.round(s * 0.2))}px 'Press Start 2P', monospace`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("TODO", 0, s * 0.02);
+        return;
+      }
       ctx.fillStyle = "#252a32";
       ctx.strokeStyle = accent;
       ctx.lineWidth = Math.max(2, s * 0.1);
@@ -2168,66 +2383,51 @@
       return;
     }
     if (kind === "edgecase") {
-      ctx.strokeStyle = accent;
-      ctx.lineWidth = Math.max(3, s * 0.15);
-      for (const [x, dir] of [[-s * 0.2, 1], [s * 0.2, -1]]) {
-        ctx.beginPath();
-        ctx.moveTo(x + dir * s * 0.3, -s * 0.55);
-        ctx.lineTo(x, -s * 0.55);
-        ctx.lineTo(x, s * 0.55);
-        ctx.lineTo(x + dir * s * 0.3, s * 0.55);
-        ctx.stroke();
-      }
+      ctx.fillStyle = "#111528";
+      ctx.strokeStyle = "#42e8ff";
+      ctx.lineWidth = Math.max(2, s * 0.08);
+      ctx.fillRect(-s * 0.5, -s * 0.38, s, s * 0.76);
+      ctx.strokeRect(-s * 0.56, -s * 0.32, s, s * 0.76);
+      ctx.strokeStyle = "#ff3f8e";
+      ctx.strokeRect(-s * 0.44, -s * 0.44, s, s * 0.76);
+      ctx.fillStyle = "#fff";
+      ctx.font = `${Math.max(6, Math.round(s * 0.36))}px 'Press Start 2P', monospace`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("?", 0, 0);
       return;
     }
     if (kind === "bug") {
-      ctx.fillStyle = "#9dff45";
-      ctx.strokeStyle = "#143b16";
+      ctx.fillStyle = "#338f27";
+      ctx.strokeStyle = "#101810";
       ctx.lineWidth = Math.max(2, s * 0.1);
-      ctx.beginPath();
-      ctx.ellipse(0, 0, s * 0.38, s * 0.52, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-      ctx.beginPath();
+      ctx.lineCap = "round";
+
       for (const side of [-1, 1]) {
-        for (const yy of [-0.3, 0, 0.3]) {
-          ctx.moveTo(side * s * 0.28, yy * s);
-          ctx.lineTo(side * s * 0.62, yy * s + side * s * 0.12);
-        }
+        ctx.beginPath();
+        ctx.moveTo(side * s * 0.16, -s * 0.36);
+        ctx.quadraticCurveTo(side * s * 0.2, -s * 0.7, side * s * 0.34, -s * 0.74);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(side * s * 0.34, -s * 0.74, s * 0.07, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
       }
-      ctx.stroke();
-      ctx.strokeStyle = "#143b16";
+
       ctx.beginPath();
-      ctx.moveTo(0, -s * 0.48);
-      ctx.lineTo(0, s * 0.48);
-      ctx.stroke();
-      return;
-    }
-    if (kind === "burrower") {
-      ctx.fillStyle = "#5b2c16";
-      ctx.beginPath();
-      ctx.arc(0, 0, s * 0.56, 0, Math.PI * 2);
+      ctx.ellipse(0, 0, s * 0.48, s * 0.42, 0, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = "#e04a2f";
-      ctx.fillRect(-s * 0.52, -s * 0.45, s * 1.04, s * 0.2);
-      ctx.fillStyle = "#fff";
-      ctx.fillRect(-s * 0.3, -s * 0.1, s * 0.2, s * 0.25);
-      ctx.fillRect(s * 0.1, -s * 0.1, s * 0.2, s * 0.25);
-      return;
-    }
-    if (kind === "enemy") {
-      // Goomba face
-      ctx.fillStyle = "#8b4513";
+      ctx.stroke();
+
+      ctx.fillStyle = "#101810";
+      for (const side of [-1, 1]) {
+        ctx.beginPath();
+        ctx.arc(side * s * 0.15, -s * 0.08, s * 0.045, 0, Math.PI * 2);
+        ctx.fill();
+      }
       ctx.beginPath();
-      ctx.arc(0, -s * 0.1, s * 0.55, Math.PI, 0);
-      ctx.fill();
-      ctx.fillRect(-s * 0.55, -s * 0.1, s * 1.1, s * 0.35);
-      ctx.fillStyle = "#fff";
-      ctx.fillRect(-s * 0.32, -s * 0.2, s * 0.22, s * 0.28);
-      ctx.fillRect(s * 0.1, -s * 0.2, s * 0.22, s * 0.28);
-      ctx.fillStyle = "#000";
-      ctx.fillRect(-s * 0.24, -s * 0.14, s * 0.1, s * 0.18);
-      ctx.fillRect(s * 0.16, -s * 0.14, s * 0.1, s * 0.18);
+      ctx.arc(0, s * 0.01, s * 0.21, 0.2, Math.PI - 0.2);
+      ctx.stroke();
       return;
     }
     if (kind === "piranha") {
@@ -2332,161 +2532,90 @@
 
   function drawCodeBug(e, x, y) {
     const cx = x + e.w / 2;
-    const cy = y + e.h * 0.5;
+    const cy = y + e.h * 0.58;
     const crawl = Math.sin(animTime * 13 + e.x * 0.03);
     ctx.save();
-    const glow = 0.55 + Math.sin(animTime * 8) * 0.2;
-    ctx.fillStyle = `rgba(126,255,69,${glow * 0.28})`;
-    ctx.shadowColor = "#7dff45";
-    ctx.shadowBlur = TILE * 0.22;
+
+    // A simple, hand-drawn comic bug: round, green, friendly, and easy to read at speed.
+    ctx.fillStyle = "rgba(0, 0, 0, 0.22)";
     ctx.beginPath();
-    ctx.ellipse(cx, cy, e.w * 0.48, e.h * 0.56, 0, 0, Math.PI * 2);
+    ctx.ellipse(cx, y + e.h * 0.94, e.w * 0.39, e.h * 0.09, 0, 0, Math.PI * 2);
     ctx.fill();
-    ctx.shadowBlur = 0;
-    ctx.strokeStyle = "#173b1c";
-    ctx.lineWidth = Math.max(2, TILE * 0.04);
+
+    ctx.strokeStyle = "#101810";
+    ctx.lineWidth = Math.max(2, TILE * 0.035);
     ctx.lineCap = "round";
-    // Six animated legs make this read as a crawling software bug, not another Goomba.
+
+    // Stubby animated feet.
     for (const side of [-1, 1]) {
-      for (let i = -1; i <= 1; i++) {
-        const ly = cy + i * e.h * 0.2;
-        const kick = crawl * side * (i === 0 ? -1 : 1) * e.w * 0.09;
-        ctx.beginPath();
-        ctx.moveTo(cx + side * e.w * 0.29, ly);
-        ctx.lineTo(cx + side * e.w * 0.58, ly + kick);
-        ctx.stroke();
-      }
+      const kick = crawl * side * e.w * 0.05;
+      ctx.beginPath();
+      ctx.moveTo(cx + side * e.w * 0.22, cy + e.h * 0.26);
+      ctx.quadraticCurveTo(
+        cx + side * e.w * 0.31,
+        cy + e.h * 0.4,
+        cx + side * e.w * 0.42 + kick,
+        cy + e.h * 0.36,
+      );
+      ctx.stroke();
     }
-    const shell = ctx.createLinearGradient(cx, y, cx, y + e.h);
-    shell.addColorStop(0, "#c6ff55");
-    shell.addColorStop(0.55, "#55d82c");
-    shell.addColorStop(1, "#1e8c35");
-    ctx.fillStyle = shell;
-    ctx.shadowColor = "#7dff45";
-    ctx.shadowBlur = TILE * 0.12;
-    ctx.beginPath();
-    ctx.ellipse(cx, cy, e.w * 0.38, e.h * 0.48, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = "#16351b";
-    ctx.beginPath();
-    ctx.ellipse(cx, y + e.h * 0.18, e.w * 0.25, e.h * 0.16, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = "#d9ff8a";
-    ctx.lineWidth = Math.max(2, TILE * 0.025);
-    ctx.beginPath();
-    ctx.moveTo(cx, y + e.h * 0.22);
-    ctx.lineTo(cx, y + e.h * 0.9);
-    ctx.stroke();
-    ctx.fillStyle = "#102715";
+
+    // Wobbly antennae with round tips.
     for (const side of [-1, 1]) {
       ctx.beginPath();
-      ctx.arc(cx + side * e.w * 0.1, y + e.h * 0.15, e.w * 0.045, 0, Math.PI * 2);
+      ctx.moveTo(cx + side * e.w * 0.16, cy - e.h * 0.28);
+      ctx.quadraticCurveTo(
+        cx + side * e.w * 0.2,
+        y + e.h * 0.04,
+        cx + side * e.w * (0.29 + crawl * 0.015),
+        y + e.h * 0.02,
+      );
+      ctx.stroke();
+      ctx.fillStyle = "#338f27";
+      ctx.beginPath();
+      ctx.arc(cx + side * e.w * (0.29 + crawl * 0.015), y + e.h * 0.02, e.w * 0.045, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = "#338f27";
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, e.w * 0.42, e.h * 0.36, crawl * 0.015, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Flat highlights preserve the comic style without the old neon glow.
+    ctx.fillStyle = "#54aa3d";
+    ctx.beginPath();
+    ctx.ellipse(cx - e.w * 0.13, cy - e.h * 0.13, e.w * 0.12, e.h * 0.08, -0.4, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Minimal dot eyes and a curved smile match the site's character language.
+    ctx.fillStyle = "#101810";
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.arc(cx + side * e.w * 0.12, cy - e.h * 0.04, e.w * 0.035, 0, Math.PI * 2);
       ctx.fill();
     }
-    ctx.fillStyle = "#fff";
-    ctx.font = `${Math.max(6, Math.round(TILE * 0.07))}px 'Press Start 2P', monospace`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText("</>", cx, cy + e.h * 0.12);
-    ctx.textAlign = "left";
-    ctx.textBaseline = "alphabetic";
+    ctx.beginPath();
+    ctx.arc(cx, cy + e.h * 0.01, e.w * 0.17, 0.2, Math.PI - 0.2);
+    ctx.stroke();
+
     ctx.restore();
+    drawEntityName(cx, y - TILE * 0.12, e.name, "#7bdc62");
   }
 
   function drawEnemy(e) {
     if (e.dead && e.squish > 0.4) return;
     const [x, y] = worldToScreen(e.x, e.y);
     if (e.dead) {
-      ctx.fillStyle = e.type === "bug" ? "#2d8f35" : "#4a2513";
+      ctx.fillStyle = "#2d8f35";
       ctx.beginPath();
       ctx.ellipse(x + e.w / 2, y + e.h - TILE * 0.08, e.w * 0.5, TILE * 0.11, 0, 0, Math.PI * 2);
       ctx.fill();
       return;
     }
-    if (e.type === "bug") {
-      drawCodeBug(e, x, y);
-      return;
-    }
-    const cx = x + e.w / 2;
-    const footY = y + e.h;
-    const step = Math.sin(animTime * 10 + e.x * 0.025);
-    const liftLeft = Math.max(0, step) * TILE * 0.055;
-    const liftRight = Math.max(0, -step) * TILE * 0.055;
-
-    ctx.save();
-    // Ground shadow and animated feet make the patrol feel planted.
-    ctx.fillStyle = "#0004";
-    ctx.beginPath();
-    ctx.ellipse(cx, footY + 2, e.w * 0.46, e.h * 0.09, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "#342016";
-    ctx.strokeStyle = "#160d09";
-    ctx.lineWidth = Math.max(2, TILE * 0.035);
-    for (const [side, lift] of [[-1, liftLeft], [1, liftRight]]) {
-      ctx.beginPath();
-      ctx.ellipse(cx + side * e.w * 0.3, footY - e.h * 0.08 - lift, e.w * 0.28, e.h * 0.12, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-    }
-
-    // Pale stalk/body beneath the oversized mushroom head.
-    ctx.fillStyle = "#d8a56f";
-    ctx.strokeStyle = "#3a1c0d";
-    ctx.lineWidth = Math.max(2, TILE * 0.04);
-    roundRect(cx - e.w * 0.3, y + e.h * 0.43, e.w * 0.6, e.h * 0.45, e.w * 0.14);
-    ctx.fill();
-    ctx.stroke();
-
-    // Distinct Goomba cap with warm highlight and dark lower rim.
-    const capGrad = ctx.createLinearGradient(cx, y, cx, y + e.h * 0.68);
-    capGrad.addColorStop(0, "#b96a2c");
-    capGrad.addColorStop(0.55, "#8b451f");
-    capGrad.addColorStop(1, "#5b2a15");
-    ctx.fillStyle = capGrad;
-    ctx.beginPath();
-    ctx.moveTo(cx - e.w * 0.5, y + e.h * 0.58);
-    ctx.bezierCurveTo(cx - e.w * 0.5, y + e.h * 0.13, cx - e.w * 0.25, y, cx, y);
-    ctx.bezierCurveTo(cx + e.w * 0.25, y, cx + e.w * 0.5, y + e.h * 0.13, cx + e.w * 0.5, y + e.h * 0.58);
-    ctx.quadraticCurveTo(cx, y + e.h * 0.76, cx - e.w * 0.5, y + e.h * 0.58);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-    ctx.strokeStyle = "#eaa05a";
-    ctx.lineWidth = Math.max(2, TILE * 0.025);
-    ctx.beginPath();
-    ctx.arc(cx - e.w * 0.08, y + e.h * 0.31, e.w * 0.31, Math.PI * 1.08, Math.PI * 1.72);
-    ctx.stroke();
-
-    // Angry eyes, heavy eyebrows and tiny fangs.
-    ctx.fillStyle = "#fff8e8";
-    for (const side of [-1, 1]) {
-      ctx.beginPath();
-      ctx.ellipse(cx + side * e.w * 0.19, y + e.h * 0.38, e.w * 0.12, e.h * 0.16, 0, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.fillStyle = "#17110d";
-    ctx.fillRect(cx - e.w * 0.24, y + e.h * 0.34, e.w * 0.07, e.h * 0.15);
-    ctx.fillRect(cx + e.w * 0.17, y + e.h * 0.34, e.w * 0.07, e.h * 0.15);
-    ctx.strokeStyle = "#20110a";
-    ctx.lineWidth = Math.max(3, TILE * 0.055);
-    ctx.beginPath();
-    ctx.moveTo(cx - e.w * 0.35, y + e.h * 0.25);
-    ctx.lineTo(cx - e.w * 0.08, y + e.h * 0.35);
-    ctx.moveTo(cx + e.w * 0.35, y + e.h * 0.25);
-    ctx.lineTo(cx + e.w * 0.08, y + e.h * 0.35);
-    ctx.stroke();
-    ctx.fillStyle = "#fff";
-    for (const side of [-1, 1]) {
-      ctx.beginPath();
-      ctx.moveTo(cx + side * e.w * 0.15, y + e.h * 0.62);
-      ctx.lineTo(cx + side * e.w * 0.03, y + e.h * 0.62);
-      ctx.lineTo(cx + side * e.w * 0.09, y + e.h * 0.73);
-      ctx.closePath();
-      ctx.fill();
-    }
-    ctx.restore();
+    drawCodeBug(e, x, y);
   }
 
   function drawFlag() {
@@ -2545,9 +2674,8 @@
     if (moving) player.walkFrame += 0.25;
 
     const sprite = player.onGround ? MARIO_IDLE : MARIO_JUMP;
-    // Super Mario reads a little taller; star swaps in flashing rainbow palettes.
-    const grow = player.super ? 1.18 : 1;
-    const scale = (player.h / 16) * grow;
+    // Super size changes the actual player dimensions; star swaps in flashing rainbow palettes.
+    const scale = player.h / 16;
     let pal = MARIO_PAL;
     if (starTime > 0) pal = MARIO_STAR_PALS[Math.floor(animTime * 16) % MARIO_STAR_PALS.length];
 
@@ -2555,9 +2683,7 @@
     ctx.translate(x + player.w / 2, y);
     ctx.scale(player.facing, 1);
     const bob = moving ? Math.abs(Math.sin(player.walkFrame)) * TILE * 0.03 : 0;
-    // Anchor the sprite's feet even when Super Mario is taller.
-    const oy = bob - (grow - 1) * 16 * (player.h / 16);
-    px(sprite, (-16 * scale) / 2, oy, scale, pal);
+    px(sprite, (-16 * scale) / 2, bob, scale, pal);
     ctx.restore();
 
     if (starTime > 0 && starTime < 2.5 && Math.floor(animTime * 8) % 2 === 0) {
@@ -2605,6 +2731,9 @@
 
     for (const b of blocks) drawBlock(b);
 
+    // Pipe-emerging bugs render first so the pipe mouth masks their lower half.
+    for (const e of enemies) if (e.pipeEmerging) drawEnemy(e);
+
     for (const p of pipes) {
       const [x] = worldToScreen(p.x, p.y);
       if (x + p.w < -50 || x > W + 50) continue;
@@ -2626,7 +2755,7 @@
 
     for (const c of coinList) drawCoin(c);
     for (const pu of powerups) drawPowerup(pu);
-    for (const e of enemies) drawEnemy(e);
+    for (const e of enemies) if (!e.pipeEmerging) drawEnemy(e);
     drawFlag();
     drawPlayer();
     drawParticles();
