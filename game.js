@@ -58,6 +58,14 @@
   ];
   const LANDMINE_NAMES = ["SCOPE CREEP", "TECH DEBT", "FLAKY TEST", "MERGE CONFLICT"];
   const PROD_ISSUE_NAMES = ["MEMORY LEAK", "DB DEADLOCK", "CACHE STAMPEDE", "CERT EXPIRY"];
+  const STAFF_REVIEW_COMMENTS = [
+    "REDO THE PR",
+    "WHY ARE WE DOING THIS?",
+    "REDESIGN IT",
+    "WHAT'S THE TRADEOFF?",
+    "ADD TESTS",
+    "THIS WON'T SCALE",
+  ];
 
   let gameMode = "classic";
 
@@ -179,6 +187,8 @@
   let coinList = [];
   let enemies = [];
   let flag = null;
+  let staffBowser = null;
+  let reviewComments = [];
   let player = null;
   let starTime = 0;
   let spawn = { x: 80, y: 0 };
@@ -300,6 +310,12 @@
       tone(70, 0.28, "square", 0.22, 28, 0.05);
     }
 
+    function bossShot() {
+      tone(190, 0.09, "square", 0.34, 70);
+      tone(95, 0.13, "sawtooth", 0.2, 42, 0.015);
+      noiseBurst(0.07, 0.24);
+    }
+
     function stomp() {
       tone(180, 0.08, "triangle", 0.28, 80);
       noiseBurst(0.06, 0.12);
@@ -374,6 +390,7 @@
       coin,
       powerup,
       explosion,
+      bossShot,
       stomp,
       hurt,
       die,
@@ -468,6 +485,8 @@
     powerups = [];
     coinList = [];
     enemies = [];
+    reviewComments = [];
+    staffBowser = null;
     pits = [];
     flag = null;
     syncPhysicsToTile();
@@ -576,7 +595,10 @@
       }
     }
 
-    groundY = cellY(groundRow, rows);
+    // The playable surface is SURFACE_ROW. `groundRow` is the first generated
+    // underground body row and is only used to detect pits. Using it here put
+    // every ground-anchored entity exactly one tile below Mario and the bugs.
+    groundY = cellY(SURFACE_ROW, rows);
 
     // Exactly one tall pipe is a bug-only outlet; it never also grows a piranha.
     if (piranhas.length) {
@@ -598,6 +620,22 @@
       const endX = levelW - TILE * 3;
       flag = { x: endX, y: groundY - TILE * 5, w: TILE * 0.3, h: TILE * 5 };
     }
+
+    // The final flag is guarded by a Staff Engineer review gate.
+    staffBowser = {
+      x: flag.x - TILE * 3.35,
+      y: groundY - TILE * 1.55,
+      w: TILE * 1.32,
+      h: TILE * 1.55,
+      groundY,
+      homeX: flag.x - TILE * 3.35,
+      patrol: TILE * 0.55,
+      fireTimer: 0.8,
+      commentIndex: Math.floor(Math.random() * STAFF_REVIEW_COMMENTS.length),
+      dialogue: "",
+      dialogueTimer: 0,
+      flash: 0,
+    };
 
     spawn = { x: TILE * 2.5, y: groundY - TILE * 0.85 };
     buildAgentPath();
@@ -645,6 +683,17 @@
     }
 
     jumpEdges.sort((a, b) => a.x - b.x);
+
+    if (staffBowser) {
+      jumpEdges.push({
+        x: staffBowser.homeX - TILE * 2.8,
+        clearUntil: flag ? flag.x + TILE * 0.5 : staffBowser.homeX + TILE * 4,
+        kind: "review",
+        span: TILE * 3,
+        done: false,
+      });
+      jumpEdges.sort((a, b) => a.x - b.x);
+    }
 
     if (flag) {
       for (let x = TILE * 3; x < flag.x; x += TILE) {
@@ -775,6 +824,62 @@
     return null;
   }
 
+  function reviewHitbox(review) {
+    return { x: review.x, y: review.y, w: review.w, h: review.h };
+  }
+
+  function playerJumpingOver(rectBox) {
+    const feet = player.y + player.h;
+    const clearance = feet < rectBox.y + rectBox.h * 0.42;
+    const rising = player.vy < TILE * 0.15;
+    return clearance && (rising || !player.onGround);
+  }
+
+  function staffBowserHitbox(boss) {
+    return {
+      x: boss.x + boss.w * 0.12,
+      y: boss.y + boss.h * 0.08,
+      w: boss.w * 0.7,
+      h: boss.h * 0.9,
+    };
+  }
+
+  function agentShouldJumpForReviews(cx) {
+    for (const review of reviewComments) {
+      const hb = reviewHitbox(review);
+      const ahead = hb.x + hb.w > player.x && hb.x < player.x + TILE * 5;
+      if (!ahead) continue;
+      const dist = hb.x - (player.x + player.w * 0.35);
+      if (dist > 0 && dist < TILE * 5.2) return true;
+    }
+    if (staffBowser) {
+      const bossBox = staffBowserHitbox(staffBowser);
+      const dist = bossBox.x - (player.x + player.w * 0.35);
+      if (dist > 0 && dist < TILE * 4.2) return true;
+    }
+    return false;
+  }
+
+  function agentShouldJumpForPowerBlocks(cx) {
+    for (const b of blocks) {
+      if (b.used || b.type !== "star") continue;
+      const bx = b.x + b.w / 2;
+      const dist = bx - cx;
+      if (dist > TILE * 0.35 && dist < TILE * 2.15) return true;
+    }
+    return false;
+  }
+
+  function agentShouldJumpForBug(e, cx) {
+    if (e.dead) return false;
+    const ex = e.x + e.w / 2;
+    const dist = ex - cx;
+    if (starTime > 0) return false;
+    if (dist > TILE * 0.35 && dist < TILE * 1.55) return true;
+    if (dist >= TILE * 1.55 && dist < TILE * 3.2) return true;
+    return false;
+  }
+
   function getControls(dt) {
     const humanLeft = !!(keys.ArrowLeft || keys.KeyA);
     const humanRight = !!(keys.ArrowRight || keys.KeyD);
@@ -809,31 +914,36 @@
       }
     }
 
+    if (!agentHoldJump && agentShouldJumpForReviews(cx)) {
+      jump = true;
+      agentHoldJump = true;
+    }
+
     if (player.onGround && !agentHoldJump) {
       const edge = nextJumpEdge(cx);
       if (edge) {
         const dist = edge.x - cx;
-        // Pits need earlier takeoff; spikes jump closer to the tips
-        const window = edge.kind === "pit" ? TILE * 2.2 : TILE * 2;
+        const window = edge.kind === "pit" ? TILE * 2.2 : edge.kind === "review" ? TILE * 2.85 : TILE * 2;
         if (dist <= window) {
           jump = true;
           agentHoldJump = true;
-          // Mark done once we commit so we don't re-jump the same edge mid-pad
           if (dist < TILE * 0.5) edge.done = true;
         }
       }
 
-      // Chain-jump: if we landed and the next hazard is already close, hop immediately
       const upcoming = nextJumpEdge(cx);
       if (!jump && upcoming && upcoming.x - cx < TILE * 1.8) {
         jump = true;
         agentHoldJump = true;
       }
 
+      if (!jump && agentShouldJumpForPowerBlocks(cx)) {
+        jump = true;
+        agentHoldJump = true;
+      }
+
       for (const e of enemies) {
-        if (e.dead) continue;
-        const dx = e.x - player.x;
-        if (dx > -TILE * 0.1 && dx < TILE * 3) {
+        if (agentShouldJumpForBug(e, cx)) {
           jump = true;
           agentHoldJump = true;
           break;
@@ -848,6 +958,10 @@
           break;
         }
       }
+    }
+
+    if (!jump && !player.onGround && agentShouldJumpForReviews(cx)) {
+      jump = true;
     }
 
     updateAgentChip(true);
@@ -1031,6 +1145,35 @@
     floatText(player.x, player.y - TILE * 0.25, "AUTO RECOVER", "#ffe45c");
   }
 
+  function restartFromStaffReview(comment) {
+    player.x = spawn.x;
+    player.y = spawn.y;
+    player.vx = 0;
+    player.vy = 0;
+    player.onGround = false;
+    player.safeX = spawn.x;
+    setPlayerSuper(false);
+    invuln = 1.2;
+    starTime = 0;
+    agentHoldJump = false;
+    agentOverride = 0;
+    reviewComments = [];
+    if (staffBowser) {
+      staffBowser.fireTimer = 1.15;
+      staffBowser.flash = 0;
+      staffBowser.dialogue = "";
+      staffBowser.dialogueTimer = 0;
+    }
+    for (const edge of jumpEdges) edge.done = false;
+    cameraX = 0;
+    shake = 18;
+    score = Math.max(0, score - 500);
+    updateHud();
+    AudioSys.hurt();
+    burst(spawn.x + player.w / 2, spawn.y, "#ff9f43", 24, 1.4);
+    floatText(spawn.x, spawn.y - TILE * 0.45, comment || "CHANGES REQUESTED", "#ffe45c");
+  }
+
   function hurtPlayer() {
     if (invuln > 0 || starTime > 0) return;
     if (autopilotActive()) {
@@ -1148,6 +1291,12 @@
   function updatePowerups(dt) {
     for (const pu of powerups) {
       if (pu.taken) continue;
+      if (autopilotActive() && pu.type === "star" && pu.emerge <= 0) {
+        const dist = pu.x + pu.w / 2 - (player.x + player.w / 2);
+        if (dist > 0 && dist < TILE * 2.5 && player.onGround) {
+          player.jumpBuf = JUMP_BUFFER_MS / 1000;
+        }
+      }
       if (pu.emerge > 0) {
         // Rise cleanly out of the block first, then start behaving.
         const rise = TILE * 3.2 * dt;
@@ -1308,6 +1457,59 @@
     }
   }
 
+  function updateStaffBowser(dt) {
+    if (!staffBowser) return;
+
+    const boss = staffBowser;
+    boss.flash = Math.max(0, boss.flash - dt);
+    boss.dialogueTimer = Math.max(0, boss.dialogueTimer - dt);
+    boss.x = boss.homeX + Math.sin(animTime * 1.7) * boss.patrol;
+    // Physics and artwork share the same ground anchor: Bowser's bottom is the grass line.
+    boss.y = boss.groundY - boss.h;
+    const dx = boss.x - player.x;
+
+    // Bowser speaks the review comment, then fires a separate fast projectile.
+    if (dx > -TILE * 2 && dx < TILE * 10) {
+      boss.fireTimer -= dt;
+      if (boss.fireTimer <= 0) {
+        const text = STAFF_REVIEW_COMMENTS[boss.commentIndex % STAFF_REVIEW_COMMENTS.length];
+        boss.commentIndex += 1;
+        boss.dialogue = text;
+        boss.dialogueTimer = 1.45;
+        boss.fireTimer = 1.45 + Math.random() * 0.45;
+        boss.flash = 0.22;
+        reviewComments.push({
+          text,
+          x: boss.x - TILE * 0.3,
+          y: boss.y + boss.h * 0.47,
+          w: TILE * 0.58,
+          h: TILE * 0.28,
+          vx: -TILE * 5.25,
+          spin: Math.random() * Math.PI * 2,
+        });
+        AudioSys.bossShot();
+        shake = Math.max(shake, 5);
+      }
+    }
+
+    for (const review of reviewComments) {
+      review.x += review.vx * dt;
+      review.spin += dt * 15;
+      const hb = reviewHitbox(review);
+      if (aabb(player, hb) && !playerJumpingOver(hb)) {
+        if (starTime > 0) continue;
+        restartFromStaffReview(review.text);
+        return;
+      }
+    }
+    reviewComments = reviewComments.filter((review) => review.x + review.w > -TILE);
+
+    const bossBox = staffBowserHitbox(boss);
+    if (aabb(player, bossBox) && !playerJumpingOver(bossBox) && starTime <= 0) {
+      restartFromStaffReview("REDESIGN IT");
+    }
+  }
+
   function update(dt) {
     animTime += dt;
     if (invuln > 0) invuln -= dt;
@@ -1367,6 +1569,7 @@
     checkBlockBumps();
     updatePiranhas(dt);
     updateHiddenTraps(dt);
+    updateStaffBowser(dt);
     updatePowerups(dt);
     for (const b of blocks) if (b.bump > 0) b.bump = Math.max(0, b.bump - dt * 6);
 
@@ -1465,6 +1668,18 @@
         continue;
       }
       if (invuln > 0) continue;
+
+      if (autopilotActive() && starTime <= 0 && player.vy >= 0 && player.y + player.h - e.y < TILE * 0.55) {
+        e.dead = true;
+        e.squish = 0;
+        player.vy = JUMP_VELOCITY * 0.48;
+        score += 200;
+        AudioSys.stomp();
+        burst(e.x + e.w / 2, e.y + e.h / 2, "#7dff45", 16);
+        floatText(e.x, e.y, `${e.name} FIXED!`, "#fff");
+        updateHud();
+        continue;
+      }
 
       if (player.vy > 0 && player.y + player.h - e.y < TILE * 0.45) {
         e.dead = true;
@@ -2221,6 +2436,14 @@
       if (p.bugOnlyOutlet) continue;
       nodes.push({ x: p.cx, y: p.topY - TILE * 1.7, kind: "piranha", label: p.name });
     }
+    if (staffBowser) {
+      nodes.push({
+        x: staffBowser.x + staffBowser.w / 2,
+        y: staffBowser.y - TILE * 0.55,
+        kind: "reviewer",
+        label: "STAFF REVIEW",
+      });
+    }
 
     const playerCx = player.x + player.w / 2;
     const localNodes = nodes
@@ -2275,6 +2498,7 @@
       bug: "CODE BUG",
       piranha: "PROD ISSUE",
       spike: "SPIKES",
+      reviewer: "STAFF REVIEW",
     }[kind] || "HAZARD";
   }
 
@@ -2618,6 +2842,223 @@
     drawCodeBug(e, x, y);
   }
 
+  function drawReviewComment(review) {
+    const [x, y] = worldToScreen(review.x, review.y);
+    if (x < -TILE || x > W + TILE) return;
+    const cx = x + review.w / 2;
+    const cy = y + review.h / 2;
+    ctx.save();
+
+    // Hot, fast review round with a readable core and motion trail.
+    const glow = ctx.createRadialGradient(cx, cy, 1, cx, cy, review.w * 0.8);
+    glow.addColorStop(0, "#fffbd1");
+    glow.addColorStop(0.3, "#ffd33d");
+    glow.addColorStop(0.65, "#ff5b22");
+    glow.addColorStop(1, "rgba(255,48,20,0)");
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, review.w * 0.85, review.h * 1.25, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.strokeStyle = "#ff8a24";
+    ctx.lineWidth = Math.max(3, TILE * 0.045);
+    ctx.lineCap = "round";
+    for (let i = 0; i < 3; i++) {
+      const trail = TILE * (0.35 + i * 0.19);
+      const dy = (i - 1) * review.h * 0.24;
+      ctx.globalAlpha = 0.8 - i * 0.18;
+      ctx.beginPath();
+      ctx.moveTo(x + review.w * 0.42, cy + dy);
+      ctx.lineTo(x + review.w + trail, cy + dy);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    ctx.fillStyle = "#fff4a8";
+    ctx.strokeStyle = "#6e160d";
+    ctx.lineWidth = Math.max(2, TILE * 0.03);
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, review.w * 0.46, review.h * 0.42, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = "#f23a20";
+    ctx.beginPath();
+    ctx.arc(cx - review.w * 0.12, cy - review.h * 0.08, review.h * 0.12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawStaffDialogue(boss, x, y) {
+    if (boss.dialogueTimer <= 0 || !boss.dialogue) return;
+    const words = boss.dialogue.split(" ");
+    const lines = [];
+    let line = "";
+    for (const word of words) {
+      const next = line ? `${line} ${word}` : word;
+      if (next.length > 18 && line) {
+        lines.push(line);
+        line = word;
+      } else {
+        line = next;
+      }
+    }
+    if (line) lines.push(line);
+
+    const bubbleW = TILE * 3.45;
+    const bubbleH = TILE * (0.78 + (lines.length - 1) * 0.22);
+    const bx = x + boss.w * 0.1 - bubbleW;
+    const by = y - bubbleH - TILE * 0.28;
+    ctx.save();
+    ctx.fillStyle = "#fff9df";
+    ctx.strokeStyle = "#29170b";
+    ctx.lineWidth = Math.max(3, TILE * 0.045);
+    roundRect(bx, by, bubbleW, bubbleH, TILE * 0.1);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(bx + bubbleW * 0.82, by + bubbleH);
+    ctx.lineTo(bx + bubbleW * 0.95, by + bubbleH + TILE * 0.25);
+    ctx.lineTo(bx + bubbleW * 0.68, by + bubbleH);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = "#c9281d";
+    ctx.font = `${Math.max(6, Math.round(TILE * 0.065))}px 'Press Start 2P', monospace`;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText("REVIEW COMMENT", bx + TILE * 0.17, by + TILE * 0.2);
+    ctx.fillStyle = "#5f170f";
+    ctx.font = `${Math.max(7, Math.round(TILE * 0.082))}px 'Press Start 2P', monospace`;
+    ctx.textAlign = "center";
+    lines.forEach((text, index) => {
+      ctx.fillText(text, bx + bubbleW / 2, by + TILE * (0.49 + index * 0.22));
+    });
+    ctx.restore();
+  }
+
+  function drawStaffBowser() {
+    if (!staffBowser) return;
+    const boss = staffBowser;
+    const [x, floorY] = worldToScreen(boss.x, boss.groundY);
+    const y = floorY - boss.h;
+    if (x + boss.w < -40 || x > W + 40) return;
+    const cx = x + boss.w / 2;
+    const shellX = x + boss.w * 0.58;
+    const shellY = y + boss.h * 0.58;
+    const pulse = boss.flash > 0 ? 1.12 : 1;
+
+    ctx.fillStyle = "rgba(0, 0, 0, 0.28)";
+    ctx.beginPath();
+    ctx.ellipse(cx, floorY - 2, boss.w * 0.48, TILE * 0.1, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.save();
+    ctx.translate(cx, shellY);
+    ctx.scale(pulse, pulse);
+    ctx.translate(-cx, -shellY);
+
+    // Spiked green shell.
+    ctx.fillStyle = "#247f35";
+    ctx.strokeStyle = "#172014";
+    ctx.lineWidth = Math.max(3, TILE * 0.05);
+    ctx.beginPath();
+    ctx.ellipse(shellX, shellY, boss.w * 0.38, boss.h * 0.34, 0.12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#f4e4b0";
+    for (let i = -1; i <= 1; i++) {
+      const sx = shellX + i * boss.w * 0.22;
+      ctx.beginPath();
+      ctx.moveTo(sx - TILE * 0.09, shellY - boss.h * 0.28);
+      ctx.lineTo(sx, shellY - boss.h * 0.48);
+      ctx.lineTo(sx + TILE * 0.09, shellY - boss.h * 0.28);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    // Body, feet and arms.
+    ctx.fillStyle = "#d99125";
+    ctx.beginPath();
+    ctx.ellipse(cx - boss.w * 0.12, y + boss.h * 0.62, boss.w * 0.34, boss.h * 0.38, -0.12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#f4c55a";
+    ctx.beginPath();
+    ctx.ellipse(cx - boss.w * 0.2, y + boss.h * 0.65, boss.w * 0.2, boss.h * 0.25, -0.1, 0, Math.PI * 2);
+    ctx.fill();
+    for (const side of [-1, 1]) {
+      ctx.fillStyle = "#d99125";
+      ctx.fillRect(cx + side * boss.w * 0.2 - boss.w * 0.12, y + boss.h * 0.82, boss.w * 0.26, boss.h * 0.18);
+      ctx.fillStyle = "#f4e4b0";
+      ctx.fillRect(cx + side * boss.w * 0.24, y + boss.h * 0.94, boss.w * 0.17, boss.h * 0.06);
+    }
+
+    // Horned Bowser head.
+    const headX = cx - boss.w * 0.25;
+    const headY = y + boss.h * 0.28;
+    ctx.fillStyle = "#67a832";
+    ctx.beginPath();
+    ctx.ellipse(headX, headY, boss.w * 0.29, boss.h * 0.23, -0.12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#f4e4b0";
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(headX + side * boss.w * 0.17, headY - boss.h * 0.15);
+      ctx.lineTo(headX + side * boss.w * 0.32, headY - boss.h * 0.35);
+      ctx.lineTo(headX + side * boss.w * 0.04, headY - boss.h * 0.2);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.fillStyle = "#f2bb50";
+    ctx.beginPath();
+    ctx.ellipse(headX - boss.w * 0.17, headY + boss.h * 0.12, boss.w * 0.28, boss.h * 0.13, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(headX - boss.w * 0.2, headY - boss.h * 0.08, boss.w * 0.1, boss.h * 0.1);
+    ctx.fillStyle = "#b81818";
+    ctx.fillRect(headX - boss.w * 0.18, headY - boss.h * 0.06, boss.w * 0.04, boss.h * 0.08);
+
+    // Staff-engineer badge and laptop.
+    ctx.fillStyle = "#26354d";
+    ctx.fillRect(cx - boss.w * 0.3, y + boss.h * 0.5, boss.w * 0.45, boss.h * 0.22);
+    ctx.strokeStyle = "#8cecff";
+    ctx.strokeRect(cx - boss.w * 0.3, y + boss.h * 0.5, boss.w * 0.45, boss.h * 0.22);
+    ctx.fillStyle = "#8cecff";
+    ctx.font = `${Math.max(6, Math.round(TILE * 0.08))}px 'Press Start 2P', monospace`;
+    ctx.textAlign = "center";
+    ctx.fillText("LGTM?", cx - boss.w * 0.075, y + boss.h * 0.64);
+
+    // Arm-mounted review blaster points toward the approaching player.
+    const gunY = y + boss.h * 0.48;
+    ctx.fillStyle = "#202a35";
+    ctx.strokeStyle = "#080b0e";
+    ctx.lineWidth = Math.max(2, TILE * 0.035);
+    ctx.fillRect(x - TILE * 0.25, gunY, TILE * 0.62, TILE * 0.2);
+    ctx.strokeRect(x - TILE * 0.25, gunY, TILE * 0.62, TILE * 0.2);
+    ctx.fillStyle = "#647485";
+    ctx.fillRect(x - TILE * 0.28, gunY + TILE * 0.035, TILE * 0.16, TILE * 0.13);
+    if (boss.flash > 0) {
+      ctx.fillStyle = "#ffd43b";
+      ctx.beginPath();
+      ctx.moveTo(x - TILE * 0.27, gunY - TILE * 0.12);
+      ctx.lineTo(x - TILE * 0.62, gunY + TILE * 0.1);
+      ctx.lineTo(x - TILE * 0.27, gunY + TILE * 0.32);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+
+    drawEntityName(cx, y - TILE * 0.18, "STAFF ENGINEER", "#ff9f43");
+    drawStaffDialogue(boss, x, y);
+  }
+
   function drawFlag() {
     const [x, y] = worldToScreen(flag.x, flag.y);
     const poleW = Math.max(5, TILE * 0.12);
@@ -2756,6 +3197,8 @@
     for (const c of coinList) drawCoin(c);
     for (const pu of powerups) drawPowerup(pu);
     for (const e of enemies) if (!e.pipeEmerging) drawEnemy(e);
+    for (const review of reviewComments) drawReviewComment(review);
+    drawStaffBowser();
     drawFlag();
     drawPlayer();
     drawParticles();
