@@ -634,6 +634,11 @@
       commentIndex: Math.floor(Math.random() * STAFF_REVIEW_COMMENTS.length),
       dialogue: "",
       dialogueTimer: 0,
+      maxHp: 3,
+      hp: 3,
+      dead: false,
+      hurtTimer: 0,
+      defeatTime: 0,
       flash: 0,
     };
 
@@ -855,7 +860,7 @@
     if (staffBowser) {
       const bossBox = staffBowserHitbox(staffBowser);
       const dist = bossBox.x - (player.x + player.w * 0.35);
-      if (dist > 0 && dist < TILE * 4.2) return true;
+      if (!staffBowser.dead && dist > 0 && dist < TILE * 1.9) return true;
     }
     return false;
   }
@@ -905,6 +910,15 @@
     let right = true;
     let jump = false;
     const cx = player.x + player.w * 0.55;
+    const fightingBoss = !!staffBowser && !staffBowser.dead;
+    const bossCenter = fightingBoss ? staffBowser.x + staffBowser.w / 2 : Infinity;
+    const bossDistance = Math.abs(bossCenter - cx);
+
+    // If the agent overshoots a living boss, turn around and make another attack pass.
+    if (fightingBoss && cx > bossCenter + TILE * 0.75) {
+      left = true;
+      right = false;
+    }
 
     if (agentHoldJump) {
       if (!player.onGround && player.vy < TILE * 0.35) {
@@ -942,6 +956,11 @@
         agentHoldJump = true;
       }
 
+      if (!jump && fightingBoss && bossDistance < TILE * 2.1) {
+        jump = true;
+        agentHoldJump = true;
+      }
+
       for (const e of enemies) {
         if (agentShouldJumpForBug(e, cx)) {
           jump = true;
@@ -965,7 +984,7 @@
     }
 
     updateAgentChip(true);
-    return { left, right, jump, run: true, autopilot: true };
+    return { left, right, jump, run: !fightingBoss || bossDistance > TILE * 3.5, autopilot: true };
   }
 
   window.addEventListener("keydown", (e) => {
@@ -1274,7 +1293,7 @@
 
   function grantPowerup(pu) {
     if (pu.type === "star") {
-      starTime = 8;
+      starTime = autopilotActive() ? 30 : 8;
       score += 300;
       floatText(player.x, player.y - TILE * 0.4, "INVINCIBLE!", "#f8d030");
       AudioSys.win();
@@ -1457,15 +1476,49 @@
     }
   }
 
+  function damageStaffBowser(amount = 1) {
+    const boss = staffBowser;
+    if (!boss || boss.dead || boss.hurtTimer > 0) return false;
+
+    boss.hp = Math.max(0, boss.hp - amount);
+    boss.hurtTimer = 0.65;
+    boss.flash = 0.35;
+    shake = Math.max(shake, 16);
+    score += 500;
+    AudioSys.stomp();
+    burst(boss.x + boss.w / 2, boss.y + boss.h * 0.35, "#ff9f43", 24, 1.3);
+    floatText(boss.x, boss.y - TILE * 0.25, `REVIEW HP ${boss.hp}/${boss.maxHp}`, "#ffe45c");
+
+    if (boss.hp === 0) {
+      boss.dead = true;
+      boss.defeatTime = 0;
+      boss.dialogue = "APPROVED!";
+      boss.dialogueTimer = 2.5;
+      reviewComments = [];
+      score += 2000;
+      shake = 28;
+      AudioSys.explosion();
+      burst(boss.x + boss.w / 2, boss.y + boss.h / 2, "#7dff45", 48, 2);
+      floatText(boss.x - TILE * 0.5, boss.y - TILE * 0.65, "STAFF BOWSER DEFEATED!", "#7dff45");
+    }
+    updateHud();
+    return true;
+  }
+
   function updateStaffBowser(dt) {
     if (!staffBowser) return;
 
     const boss = staffBowser;
     boss.flash = Math.max(0, boss.flash - dt);
+    boss.hurtTimer = Math.max(0, boss.hurtTimer - dt);
     boss.dialogueTimer = Math.max(0, boss.dialogueTimer - dt);
-    boss.x = boss.homeX + Math.sin(animTime * 1.7) * boss.patrol;
     // Physics and artwork share the same ground anchor: Bowser's bottom is the grass line.
     boss.y = boss.groundY - boss.h;
+    if (boss.dead) {
+      boss.defeatTime += dt;
+      return;
+    }
+    boss.x = boss.homeX + Math.sin(animTime * 1.7) * boss.patrol;
     const dx = boss.x - player.x;
 
     // Bowser speaks the review comment, then fires a separate fast projectile.
@@ -1505,7 +1558,27 @@
     reviewComments = reviewComments.filter((review) => review.x + review.w > -TILE);
 
     const bossBox = staffBowserHitbox(boss);
-    if (aabb(player, bossBox) && !playerJumpingOver(bossBox) && starTime <= 0) {
+    const playerCx = player.x + player.w / 2;
+    const bossCx = boss.x + boss.w / 2;
+    const regularStomp =
+      aabb(player, bossBox) &&
+      player.vy > 0 &&
+      player.y + player.h < boss.y + boss.h * 0.55;
+    const agentStomp =
+      autopilotActive() &&
+      !player.onGround &&
+      Math.abs(playerCx - bossCx) < boss.w * 0.72 &&
+      player.y + player.h < boss.groundY - TILE * 0.18;
+
+    if (starTime > 0 && aabb(player, bossBox)) {
+      if (damageStaffBowser(boss.maxHp)) player.vy = JUMP_VELOCITY * 0.45;
+    } else if (regularStomp || agentStomp) {
+      if (damageStaffBowser(1)) {
+        player.y = boss.y - player.h;
+        player.vy = JUMP_VELOCITY * 0.58;
+        agentHoldJump = false;
+      }
+    } else if (aabb(player, bossBox) && boss.hurtTimer <= 0) {
       restartFromStaffReview("REDESIGN IT");
     }
   }
@@ -1696,7 +1769,16 @@
     }
 
     const goal = rect(flag.x - 12, flag.y, 48, flag.h + 24);
-    if (aabb(player, goal)) winGame();
+    if (aabb(player, goal)) {
+      if (staffBowser && !staffBowser.dead) {
+        player.x = Math.min(player.x, flag.x - player.w - TILE * 0.18);
+        player.vx = -TILE * 1.8;
+        staffBowser.dialogue = "DEFEAT ME FIRST!";
+        staffBowser.dialogueTimer = 1;
+      } else {
+        winGame();
+      }
+    }
 
     const targetCam = player.x - W * 0.35;
     cameraX += (targetCam - cameraX) * Math.min(1, dt * 7);
@@ -2955,7 +3037,30 @@
     ctx.ellipse(cx, floorY - 2, boss.w * 0.48, TILE * 0.1, 0, 0, Math.PI * 2);
     ctx.fill();
 
+    if (!boss.dead) {
+      const barW = TILE * 1.75;
+      const barH = Math.max(8, TILE * 0.13);
+      const barX = cx - barW / 2;
+      const barY = y - TILE * 0.28;
+      ctx.fillStyle = "#160d0b";
+      ctx.fillRect(barX - 3, barY - 3, barW + 6, barH + 6);
+      ctx.fillStyle = "#5b1712";
+      ctx.fillRect(barX, barY, barW, barH);
+      ctx.fillStyle = boss.hp === 1 ? "#ff3b30" : "#7dff45";
+      ctx.fillRect(barX, barY, barW * (boss.hp / boss.maxHp), barH);
+      ctx.fillStyle = "#fff";
+      ctx.font = `${Math.max(6, Math.round(TILE * 0.065))}px 'Press Start 2P', monospace`;
+      ctx.textAlign = "center";
+      ctx.fillText(`STAFF BOWSER ${boss.hp}/${boss.maxHp}`, cx, barY - TILE * 0.08);
+    }
+
     ctx.save();
+    if (boss.dead) {
+      ctx.globalAlpha = Math.max(0.55, 1 - boss.defeatTime * 0.08);
+      ctx.translate(0, floorY);
+      ctx.scale(1, 0.42);
+      ctx.translate(0, -floorY);
+    }
     ctx.translate(cx, shellY);
     ctx.scale(pulse, pulse);
     ctx.translate(-cx, -shellY);
@@ -3055,7 +3160,7 @@
     }
     ctx.restore();
 
-    drawEntityName(cx, y - TILE * 0.18, "STAFF ENGINEER", "#ff9f43");
+    if (!boss.dead) drawEntityName(cx, y - TILE * 0.18, "STAFF ENGINEER", "#ff9f43");
     drawStaffDialogue(boss, x, y);
   }
 
@@ -3076,13 +3181,14 @@
     const wave = Math.sin(animTime * 5) * TILE * 0.08;
     const flagW = TILE * 0.95;
     const flagH = TILE * 0.75;
-    ctx.fillStyle = "#e52521";
+    const flagLocked = !!staffBowser && !staffBowser.dead;
+    ctx.fillStyle = flagLocked ? "#555b65" : "#e52521";
     ctx.beginPath();
     ctx.moveTo(x + poleW * 1.2, y + TILE * 0.15);
     ctx.quadraticCurveTo(x + flagW + wave, y + flagH * 0.55, x + poleW * 1.2, y + flagH);
     ctx.closePath();
     ctx.fill();
-    ctx.fillStyle = "#fff";
+    ctx.fillStyle = flagLocked ? "#9aa1aa" : "#fff";
     ctx.beginPath();
     for (let i = 0; i < 5; i++) {
       const ang = -Math.PI / 2 + (i * 2 * Math.PI) / 5;
@@ -3097,6 +3203,17 @@
     }
     ctx.closePath();
     ctx.fill();
+    if (flagLocked) {
+      const lockX = x + TILE * 0.48;
+      const lockY = y + TILE * 0.38;
+      ctx.strokeStyle = "#ffe45c";
+      ctx.lineWidth = Math.max(2, TILE * 0.035);
+      ctx.beginPath();
+      ctx.arc(lockX, lockY - TILE * 0.07, TILE * 0.11, Math.PI, 0);
+      ctx.stroke();
+      ctx.fillStyle = "#ffe45c";
+      ctx.fillRect(lockX - TILE * 0.14, lockY - TILE * 0.07, TILE * 0.28, TILE * 0.23);
+    }
     // Base block
     drawBrickTile(x - TILE * 0.2, y + flag.h - TILE * 0.2, TILE * 0.7, TILE * 0.25);
   }

@@ -31,6 +31,6 @@ Mute preference is saved in `localStorage`.
 - Spaced-out proximity-triggered **landmines**, including a stacked **Tech Debt** trap, plus one redesigned **Edge Case**
 - Classic **spikes**, pits, and production-incident plants; one exclusive random pipe releases a bug instead of growing a plant
 - Powerups from `?`/`★` blocks plus ordinary-looking hidden power-up bricks: audible **Super** mushroom growth (and one-hit shield) and **Star** invincibility
-- Final **Staff Engineer Bowser** review gate: dodge flying review comments like “Redo the PR” and “Why are we doing this?”; any hit sends the run back to the start
+- Final **Staff Engineer Bowser** boss: dodge review rounds and defeat his three-hit review bar before the flag unlocks; any bullet hit sends the run back to the start
 - Three modes: Classic (blind), Context Graph (player-centered threat type/distance/urgency), Autonomous Agent (autopilot)
 - Web Audio SFX + looping chiptune (no external files)
