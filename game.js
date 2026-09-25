@@ -1164,13 +1164,18 @@
     floatText(player.x, player.y - TILE * 0.25, "AUTO RECOVER", "#ffe45c");
   }
 
-  function restartFromStaffReview(comment) {
-    player.x = spawn.x;
-    player.y = spawn.y;
+  function restartFromStaffReview(comment, boss = null) {
+    const respawnX = boss
+      ? Math.max(TILE, Math.min(levelW - player.w - TILE, boss.x - player.w - TILE * 0.75))
+      : spawn.x;
+    const respawnY = boss ? boss.groundY - player.h : spawn.y;
+
+    player.x = respawnX;
+    player.y = respawnY;
     player.vx = 0;
     player.vy = 0;
     player.onGround = false;
-    player.safeX = spawn.x;
+    player.safeX = respawnX;
     setPlayerSuper(false);
     invuln = 1.2;
     starTime = 0;
@@ -1184,13 +1189,13 @@
       staffBowser.dialogueTimer = 0;
     }
     for (const edge of jumpEdges) edge.done = false;
-    cameraX = 0;
+    cameraX = Math.max(0, Math.min(levelW - W, respawnX - W * 0.35));
     shake = 18;
     score = Math.max(0, score - 500);
     updateHud();
     AudioSys.hurt();
-    burst(spawn.x + player.w / 2, spawn.y, "#ff9f43", 24, 1.4);
-    floatText(spawn.x, spawn.y - TILE * 0.45, comment || "CHANGES REQUESTED", "#ffe45c");
+    burst(respawnX + player.w / 2, respawnY, "#ff9f43", 24, 1.4);
+    floatText(respawnX, respawnY - TILE * 0.45, comment || "CHANGES REQUESTED", "#ffe45c");
   }
 
   function hurtPlayer() {
@@ -1551,7 +1556,7 @@
       const hb = reviewHitbox(review);
       if (aabb(player, hb) && !playerJumpingOver(hb)) {
         if (starTime > 0) continue;
-        restartFromStaffReview(review.text);
+        restartFromStaffReview(review.text, staffBowser);
         return;
       }
     }
@@ -1579,7 +1584,7 @@
         agentHoldJump = false;
       }
     } else if (aabb(player, bossBox) && boss.hurtTimer <= 0) {
-      restartFromStaffReview("REDESIGN IT");
+      restartFromStaffReview("REDESIGN IT", staffBowser);
     }
   }
 

@@ -1,0 +1,38 @@
+version: 1
+repository:
+  purpose: Fullscreen Mario-style platformer with synthesized chiptune audio.
+  owners: [eidetixlabs]
+components:
+  - id: repository
+    path: .
+    kind: artifact
+config_refs: []
+stages:
+  - id: implementation
+    runner: implementation
+    enabled: auto
+  - id: review
+    runner: review
+    enabled: auto
+    depends_on: [implementation]
+  - id: qa
+    runner: qa
+    enabled: false
+    depends_on: [review]
+  - id: system_test
+    runner: system-test
+    enabled: false
+  - id: staging_deploy
+    runner: staging-deploy
+    enabled: false
+  - id: production_deploy
+    runner: production-deploy
+    enabled: false
+ownership:
+  default: eidetixlabs
+extensions:
+  eidetix.dev/draft:
+    generated: true
+    review_required: false
+    discovered:
+      readme: README.md
